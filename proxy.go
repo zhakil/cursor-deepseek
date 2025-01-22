@@ -5,6 +5,7 @@ import (
         "bytes"
         "compress/gzip"
         "compress/flate"
+        "context"
         "encoding/json"
         "fmt"
         "io"
@@ -414,38 +415,74 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 
         // Create a buffered reader for the response body
         reader := bufio.NewReader(resp.Body)
-        
-        for {
-                line, err := reader.ReadBytes('\n')
-                if err != nil {
-                        if err == io.EOF {
-                                log.Printf("Stream ended normally")
+
+        // Create a context to track the client connection
+        ctx, cancel := context.WithCancel(context.Background())
+        defer cancel()
+
+        // Create a channel to detect client disconnection
+        clientClosed := w.(http.CloseNotifier).CloseNotify()
+
+        // Start a goroutine to send heartbeats
+        go func() {
+                ticker := time.NewTicker(15 * time.Second)
+                defer ticker.Stop()
+                for {
+                        select {
+                        case <-ticker.C:
+                                // Send a heartbeat comment
+                                if _, err := w.Write([]byte(": heartbeat\n\n")); err != nil {
+                                        log.Printf("Error sending heartbeat: %v", err)
+                                        cancel()
+                                        return
+                                }
+                                if f, ok := w.(http.Flusher); ok {
+                                        f.Flush()
+                                }
+                        case <-ctx.Done():
                                 return
                         }
-                        log.Printf("Error reading stream: %v", err)
+                }
+        }()
+
+        for {
+                select {
+                case <-ctx.Done():
+                        log.Printf("Context cancelled, ending stream")
                         return
-                }
-
-                // Log raw line for debugging
-                log.Printf("Raw stream line: %s", string(line))
-
-                // Skip empty lines
-                if len(bytes.TrimSpace(line)) == 0 {
-                        log.Printf("Skipping empty line")
-                        continue
-                }
-
-                // Write the line to the response
-                if _, err := w.Write(line); err != nil {
-                        log.Printf("Error writing to response: %v", err)
+                case <-clientClosed:
+                        log.Printf("Client closed connection")
+                        cancel()
                         return
-                }
+                default:
+                        line, err := reader.ReadBytes('\n')
+                        if err != nil {
+                                if err == io.EOF {
+                                        continue
+                                }
+                                log.Printf("Error reading stream: %v", err)
+                                cancel()
+                                return
+                        }
 
-                // Flush the response writer
-                if f, ok := w.(http.Flusher); ok {
-                        f.Flush()
-                } else {
-                        log.Printf("Warning: ResponseWriter does not support Flush")
+                        // Skip empty lines
+                        if len(bytes.TrimSpace(line)) == 0 {
+                                continue
+                        }
+
+                        // Write the line to the response
+                        if _, err := w.Write(line); err != nil {
+                                log.Printf("Error writing to response: %v", err)
+                                cancel()
+                                return
+                        }
+
+                        // Flush the response writer
+                        if f, ok := w.(http.Flusher); ok {
+                                f.Flush()
+                        } else {
+                                log.Printf("Warning: ResponseWriter does not support Flush")
+                        }
                 }
         }
 }
@@ -510,8 +547,41 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response) {
                 Object:  "chat.completion",
                 Created: deepseekResp.Created,
                 Model:   gpt4oModel, // Use the original model name
-                Choices: deepseekResp.Choices,
                 Usage:   deepseekResp.Usage,
+        }
+
+        // Convert choices and ensure tool calls are properly handled
+        openAIResp.Choices = make([]struct {
+                Index        int     `json:"index"`
+                Message      Message `json:"message"`
+                FinishReason string  `json:"finish_reason"`
+        }, len(deepseekResp.Choices))
+
+        for i, choice := range deepseekResp.Choices {
+                openAIResp.Choices[i] = struct {
+                        Index        int     `json:"index"`
+                        Message      Message `json:"message"`
+                        FinishReason string  `json:"finish_reason"`
+                }{
+                        Index:        choice.Index,
+                        Message:      choice.Message,
+                        FinishReason: choice.FinishReason,
+                }
+
+                // Ensure tool calls are properly formatted in the message
+                if len(choice.Message.ToolCalls) > 0 {
+                        log.Printf("Processing %d tool calls in choice %d", len(choice.Message.ToolCalls), i)
+                        for j, tc := range choice.Message.ToolCalls {
+                                log.Printf("Tool call %d: %+v", j, tc)
+                                // Ensure the tool call has the required fields
+                                if tc.Function.Name == "" {
+                                        log.Printf("Warning: Empty function name in tool call %d", j)
+                                        continue
+                                }
+                                // Keep the tool call as is since it's already in the correct format
+                                openAIResp.Choices[i].Message.ToolCalls = append(openAIResp.Choices[i].Message.ToolCalls, tc)
+                        }
+                }
         }
 
         // Convert back to JSON

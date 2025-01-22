@@ -20,6 +20,7 @@ This proxy was created to enable Cursor IDE users to leverage DeepSeek's powerfu
 
 - Go 1.19 or higher
 - DeepSeek API key
+- Public Endpoint
 
 ## Installation
 
@@ -45,7 +46,7 @@ go run proxy.go
 
 The server will start on port 9000 by default.
 
-2. Use the proxy with your OpenAI API clients by setting the base URL to `http://localhost:9000`
+2. Use the proxy with your OpenAI API clients by setting the base URL to `http://your-public-endpoint:9000`
 
 ### Supported Endpoints
 
