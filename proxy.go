@@ -10,7 +10,6 @@ import (
         "io"
         "log"
         "net/http"
-        "net/http/httputil"
         "os"
         "strings"
         "time"
@@ -194,34 +193,51 @@ func main() {
 }
 
 func enableCors(w http.ResponseWriter, r *http.Request) {
-        // Allow requests from any origin
         w.Header().Set("Access-Control-Allow-Origin", "*")
-        // Allow specific headers
-        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        // Allow specific methods
-        w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        // Allow credentials
+        w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+        w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
+        w.Header().Set("Access-Control-Expose-Headers", "Content-Length")
         w.Header().Set("Access-Control-Allow-Credentials", "true")
-        // Set max age for preflight requests
-        w.Header().Set("Access-Control-Max-Age", "3600")
 }
 
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
-        // Log incoming request
-        log.Printf("Incoming request: %s %s", r.Method, r.URL.Path)
-        reqDump, err := httputil.DumpRequest(r, true)
-        if err == nil {
-                log.Printf("Request details:\n%s", string(reqDump))
-        }
-
-        // Enable CORS for all requests
-        enableCors(w, r)
-
-        // Handle OPTIONS requests
+        log.Printf("Received request: %s %s", r.Method, r.URL.Path)
+        
         if r.Method == "OPTIONS" {
-                w.WriteHeader(http.StatusOK)
+                enableCors(w, r)
                 return
         }
+
+        enableCors(w, r)
+
+        // Handle /v1/models endpoint
+        if r.URL.Path == "/v1/models" && r.Method == "GET" {
+                log.Printf("Handling /v1/models request")
+                handleModelsRequest(w)
+                return
+        }
+
+        // Log headers for debugging
+        log.Printf("Request headers: %+v", r.Header)
+        
+        // Read and log request body for debugging
+        var chatReq ChatRequest
+        body, err := io.ReadAll(r.Body)
+        if err != nil {
+                log.Printf("Error reading request body: %v", err)
+                http.Error(w, "Error reading request", http.StatusBadRequest)
+                return
+        }
+        r.Body = io.NopCloser(bytes.NewBuffer(body))
+        
+        if err := json.Unmarshal(body, &chatReq); err != nil {
+                log.Printf("Error parsing request JSON: %v", err)
+                log.Printf("Raw request body: %s", string(body))
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+        
+        log.Printf("Parsed request: %+v", chatReq)
 
         // Handle models endpoint
         if r.URL.Path == "/v1/models" {
@@ -236,20 +252,12 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
                 return
         }
 
-        // Read the original request body
-        body, err := io.ReadAll(r.Body)
-        if err != nil {
-                log.Printf("Error reading request body: %v", err)
-                http.Error(w, "Error reading request", http.StatusInternalServerError)
-                return
-        }
         // Restore the body for further reading
         r.Body = io.NopCloser(bytes.NewBuffer(body))
 
         log.Printf("Request body: %s", string(body))
 
-        // Parse the request to check for streaming
-        var chatReq ChatRequest
+        // Parse the request to check for streaming - reuse existing chatReq
         if err := json.Unmarshal(body, &chatReq); err != nil {
                 log.Printf("Error parsing request JSON: %v", err)
                 http.Error(w, "Error parsing request", http.StatusBadRequest)
@@ -394,7 +402,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
-        // Set headers for SSE
+        log.Printf("Starting streaming response handling")
+        log.Printf("Response status: %d", resp.StatusCode)
+        log.Printf("Response headers: %+v", resp.Header)
+
+        // Set headers for streaming response
         w.Header().Set("Content-Type", "text/event-stream")
         w.Header().Set("Cache-Control", "no-cache")
         w.Header().Set("Connection", "keep-alive")
@@ -402,127 +414,121 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 
         // Create a buffered reader for the response body
         reader := bufio.NewReader(resp.Body)
-        flusher, ok := w.(http.Flusher)
-        if !ok {
-                http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
-                return
-        }
-
-        // Stream each line
+        
         for {
                 line, err := reader.ReadBytes('\n')
                 if err != nil {
-                        if err != io.EOF {
-                                log.Printf("Error reading stream: %v", err)
+                        if err == io.EOF {
+                                log.Printf("Stream ended normally")
+                                return
                         }
+                        log.Printf("Error reading stream: %v", err)
                         return
                 }
+
+                // Log raw line for debugging
+                log.Printf("Raw stream line: %s", string(line))
 
                 // Skip empty lines
                 if len(bytes.TrimSpace(line)) == 0 {
+                        log.Printf("Skipping empty line")
                         continue
                 }
 
-                // Log the line for debugging
-                lineStr := string(bytes.TrimSpace(line))
-                log.Printf("Streaming line: %s", lineStr)
-
-                // Handle keep-alive messages
-                if lineStr == ": keep-alive" {
-                        if _, err := w.Write([]byte(": keep-alive\n\n")); err != nil {
-                                log.Printf("Error writing keep-alive: %v", err)
-                                return
-                        }
-                        flusher.Flush()
-                        continue
-                }
-
-                // Parse SSE data line
-                if strings.HasPrefix(lineStr, "data: ") {
-                        data := strings.TrimPrefix(lineStr, "data: ")
-
-                        // Forward [DONE] message immediately but don't return
-                        if data == "[DONE]" {
-                                if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
-                                        log.Printf("Error writing done message: %v", err)
-                                        return
-                                }
-                                flusher.Flush()
-                                continue // Keep reading for more messages
-                        }
-
-                        // Write the line immediately to maintain streaming
-                        if _, err := w.Write([]byte(lineStr + "\n\n")); err != nil {
-                                log.Printf("Error writing stream: %v", err)
-                                return
-                        }
-                        flusher.Flush()
-
-                        // Try to parse as JSON for logging
-                        var resp struct {
-                                Choices []struct {
-                                        Delta struct {
-                                                Content    string     `json:"content"`
-                                                ToolCalls []ToolCall `json:"tool_calls"`
-                                        } `json:"delta"`
-                                        FinishReason string `json:"finish_reason"`
-                                } `json:"choices"`
-                        }
-                        if err := json.Unmarshal([]byte(data), &resp); err == nil {
-                                if len(resp.Choices) > 0 {
-                                        choice := resp.Choices[0]
-
-                                        // Log tool calls but don't stop streaming
-                                        if len(choice.Delta.ToolCalls) > 0 {
-                                                log.Printf("Found tool call in stream: %+v", choice.Delta.ToolCalls)
-                                        }
-
-                                        // Log tool call completion but don't stop streaming
-                                        if choice.FinishReason == "tool_calls" {
-                                                log.Printf("Tool call finished, continuing...")
-                                        }
-
-                                        // Log content
-                                        if choice.Delta.Content != "" {
-                                                log.Printf("Content: %s", choice.Delta.Content)
-                                        }
-                                }
-                        }
-                        continue
-                }
-
-                // Write any other line with proper SSE formatting
-                if _, err := w.Write([]byte(lineStr + "\n\n")); err != nil {
-                        log.Printf("Error writing stream: %v", err)
+                // Write the line to the response
+                if _, err := w.Write(line); err != nil {
+                        log.Printf("Error writing to response: %v", err)
                         return
                 }
-                flusher.Flush()
+
+                // Flush the response writer
+                if f, ok := w.(http.Flusher); ok {
+                        f.Flush()
+                } else {
+                        log.Printf("Warning: ResponseWriter does not support Flush")
+                }
         }
 }
 
 func handleRegularResponse(w http.ResponseWriter, resp *http.Response) {
-        // Read and decompress response body
-        respBody, err := readResponse(resp)
+        log.Printf("Handling regular (non-streaming) response")
+        log.Printf("Response status: %d", resp.StatusCode)
+        log.Printf("Response headers: %+v", resp.Header)
+
+        // Read and log response body
+        body, err := readResponse(resp)
         if err != nil {
-                log.Printf("Error reading response body: %v", err)
-                http.Error(w, "Error reading response", http.StatusInternalServerError)
+                log.Printf("Error reading response: %v", err)
+                http.Error(w, "Error reading response from upstream", http.StatusInternalServerError)
                 return
         }
-        log.Printf("DeepSeek response body: %s", string(respBody))
 
-        // Copy response headers, skipping compression-related ones
-        copyHeaders(w.Header(), resp.Header)
+        log.Printf("Original response body: %s", string(body))
 
-        // Set content type and CORS headers
-        w.Header().Set("Content-Type", "application/json; charset=utf-8")
-        w.Header().Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
-
-        w.WriteHeader(resp.StatusCode)
-
-        // Write the decompressed response back
-        if _, err := w.Write(respBody); err != nil {
-                log.Printf("Error writing response: %v", err)
+        // Parse the DeepSeek response
+        var deepseekResp struct {
+                ID      string `json:"id"`
+                Object  string `json:"object"`
+                Created int64  `json:"created"`
+                Model   string `json:"model"`
+                Choices []struct {
+                        Index        int     `json:"index"`
+                        Message      Message `json:"message"`
+                        FinishReason string  `json:"finish_reason"`
+                } `json:"choices"`
+                Usage struct {
+                        PromptTokens     int `json:"prompt_tokens"`
+                        CompletionTokens int `json:"completion_tokens"`
+                        TotalTokens      int `json:"total_tokens"`
+                } `json:"usage"`
         }
+
+        if err := json.Unmarshal(body, &deepseekResp); err != nil {
+                log.Printf("Error parsing DeepSeek response: %v", err)
+                w.WriteHeader(http.StatusInternalServerError)
+                return
+        }
+
+        // Convert to OpenAI format
+        openAIResp := struct {
+                ID      string `json:"id"`
+                Object  string `json:"object"`
+                Created int64  `json:"created"`
+                Model   string `json:"model"`
+                Choices []struct {
+                        Index        int     `json:"index"`
+                        Message      Message `json:"message"`
+                        FinishReason string  `json:"finish_reason"`
+                } `json:"choices"`
+                Usage struct {
+                        PromptTokens     int `json:"prompt_tokens"`
+                        CompletionTokens int `json:"completion_tokens"`
+                        TotalTokens      int `json:"total_tokens"`
+                } `json:"usage"`
+        }{
+                ID:      deepseekResp.ID,
+                Object:  "chat.completion",
+                Created: deepseekResp.Created,
+                Model:   gpt4oModel, // Use the original model name
+                Choices: deepseekResp.Choices,
+                Usage:   deepseekResp.Usage,
+        }
+
+        // Convert back to JSON
+        modifiedBody, err := json.Marshal(openAIResp)
+        if err != nil {
+                log.Printf("Error creating modified response: %v", err)
+                w.WriteHeader(http.StatusInternalServerError)
+                return
+        }
+
+        log.Printf("Modified response body: %s", string(modifiedBody))
+
+        // Set response headers
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(resp.StatusCode)
+        w.Write(modifiedBody)
+        log.Printf("Modified response sent successfully")
 }
 
 func copyHeaders(dst, src http.Header) {
@@ -544,21 +550,28 @@ func copyHeaders(dst, src http.Header) {
 }
 
 func handleModelsRequest(w http.ResponseWriter) {
-        currentTime := time.Now().Unix()
-        models := ModelsResponse{
+        log.Printf("Handling models request")
+        response := ModelsResponse{
                 Object: "list",
                 Data: []Model{
                         {
-                                ID:      gpt4oModel,
+                                ID:      "gpt-4o",
                                 Object:  "model",
-                                Created: currentTime,
-                                OwnedBy: "organization-owner",
+                                Created: time.Now().Unix(),
+                                OwnedBy: "openai",
+                        },
+                        {
+                                ID:      "deepseek-chat",
+                                Object:  "model",
+                                Created: time.Now().Unix(),
+                                OwnedBy: "deepseek",
                         },
                 },
         }
-
+        
         w.Header().Set("Content-Type", "application/json")
-        json.NewEncoder(w).Encode(models)
+        json.NewEncoder(w).Encode(response)
+        log.Printf("Models response sent successfully")
 }
 
 func readResponse(resp *http.Response) ([]byte, error) {
