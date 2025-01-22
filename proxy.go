@@ -415,11 +415,19 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
         // Create a buffered reader for the response body
         reader := bufio.NewReader(resp.Body)
         
+        var lastEvent string
+        var hasMoreContent bool
+        
         for {
                 line, err := reader.ReadBytes('\n')
                 if err != nil {
                         if err == io.EOF {
                                 log.Printf("Stream ended normally")
+                                // If we still have more content to process, keep the connection alive
+                                if hasMoreContent {
+                                        log.Printf("More content expected, keeping connection alive")
+                                        continue
+                                }
                                 return
                         }
                         log.Printf("Error reading stream: %v", err)
@@ -431,8 +439,82 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 
                 // Skip empty lines
                 if len(bytes.TrimSpace(line)) == 0 {
-                        log.Printf("Skipping empty line")
                         continue
+                }
+
+                // Parse the event data
+                if bytes.HasPrefix(line, []byte("data: ")) {
+                        lastEvent = string(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data: "))))
+                        
+                        // Check if this is the end of a sequence
+                        if lastEvent == "[DONE]" {
+                                // Write the [DONE] marker
+                                if _, err := w.Write(line); err != nil {
+                                        log.Printf("Error writing final line: %v", err)
+                                }
+                                if f, ok := w.(http.Flusher); ok {
+                                        f.Flush()
+                                }
+                                
+                                if !hasMoreContent {
+                                        log.Printf("No more content expected, ending stream")
+                                        return
+                                }
+                                
+                                // Reset content flag but continue the stream
+                                hasMoreContent = false
+                                log.Printf("End marker received, waiting for more content")
+                                continue
+                        }
+
+                        // Try to parse the event as JSON
+                        var event struct {
+                                Choices []struct {
+                                        FinishReason string `json:"finish_reason"`
+                                        Message      struct {
+                                                Content    string     `json:"content"`
+                                                ToolCalls  []ToolCall `json:"tool_calls"`
+                                                Role       string     `json:"role"`
+                                        } `json:"message"`
+                                } `json:"choices"`
+                        }
+                        
+                        if err := json.Unmarshal([]byte(lastEvent), &event); err == nil {
+                                if len(event.Choices) > 0 {
+                                        choice := event.Choices[0]
+                                        
+                                        // Check for any content that indicates more is coming
+                                        if choice.Message.Content != "" {
+                                                hasMoreContent = true
+                                                log.Printf("Content detected in message")
+                                        }
+                                        
+                                        // Check for tool calls
+                                        if len(choice.Message.ToolCalls) > 0 {
+                                                hasMoreContent = true
+                                                log.Printf("Tool calls detected in message")
+                                        }
+                                        
+                                        // Check finish reason
+                                        switch choice.FinishReason {
+                                        case "tool_calls":
+                                                hasMoreContent = true
+                                                log.Printf("Tool call finish reason detected")
+                                        case "":
+                                                // Empty finish reason means more content is coming
+                                                hasMoreContent = true
+                                                log.Printf("Empty finish reason, expecting more content")
+                                        case "stop":
+                                                if len(choice.Message.ToolCalls) > 0 {
+                                                        hasMoreContent = true
+                                                        log.Printf("Stop with tool calls, expecting more content")
+                                                } else {
+                                                        hasMoreContent = false
+                                                        log.Printf("Final stop received")
+                                                }
+                                        }
+                                }
+                        }
                 }
 
                 // Write the line to the response
@@ -510,8 +592,41 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response) {
                 Object:  "chat.completion",
                 Created: deepseekResp.Created,
                 Model:   gpt4oModel, // Use the original model name
-                Choices: deepseekResp.Choices,
                 Usage:   deepseekResp.Usage,
+        }
+
+        // Convert choices and ensure tool calls are properly handled
+        openAIResp.Choices = make([]struct {
+                Index        int     `json:"index"`
+                Message      Message `json:"message"`
+                FinishReason string  `json:"finish_reason"`
+        }, len(deepseekResp.Choices))
+
+        for i, choice := range deepseekResp.Choices {
+                openAIResp.Choices[i] = struct {
+                        Index        int     `json:"index"`
+                        Message      Message `json:"message"`
+                        FinishReason string  `json:"finish_reason"`
+                }{
+                        Index:        choice.Index,
+                        Message:      choice.Message,
+                        FinishReason: choice.FinishReason,
+                }
+
+                // Ensure tool calls are properly formatted in the message
+                if len(choice.Message.ToolCalls) > 0 {
+                        log.Printf("Processing %d tool calls in choice %d", len(choice.Message.ToolCalls), i)
+                        for j, tc := range choice.Message.ToolCalls {
+                                log.Printf("Tool call %d: %+v", j, tc)
+                                // Ensure the tool call has the required fields
+                                if tc.Function.Name == "" {
+                                        log.Printf("Warning: Empty function name in tool call %d", j)
+                                        continue
+                                }
+                                // Keep the tool call as is since it's already in the correct format
+                                openAIResp.Choices[i].Message.ToolCalls = append(openAIResp.Choices[i].Message.ToolCalls, tc)
+                        }
+                }
         }
 
         // Convert back to JSON
