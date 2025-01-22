@@ -5,6 +5,7 @@ import (
         "bytes"
         "compress/gzip"
         "compress/flate"
+        "context"
         "encoding/json"
         "fmt"
         "io"
@@ -414,120 +415,74 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 
         // Create a buffered reader for the response body
         reader := bufio.NewReader(resp.Body)
-        
-        var lastEvent string
-        var hasMoreContent bool
-        
-        for {
-                line, err := reader.ReadBytes('\n')
-                if err != nil {
-                        if err == io.EOF {
-                                log.Printf("Stream ended normally")
-                                // If we still have more content to process, keep the connection alive
-                                if hasMoreContent {
-                                        log.Printf("More content expected, keeping connection alive")
-                                        continue
-                                }
-                                return
-                        }
-                        log.Printf("Error reading stream: %v", err)
-                        return
-                }
 
-                // Log raw line for debugging
-                log.Printf("Raw stream line: %s", string(line))
+        // Create a context to track the client connection
+        ctx, cancel := context.WithCancel(context.Background())
+        defer cancel()
 
-                // Skip empty lines
-                if len(bytes.TrimSpace(line)) == 0 {
-                        continue
-                }
+        // Create a channel to detect client disconnection
+        clientClosed := w.(http.CloseNotifier).CloseNotify()
 
-                // Parse the event data
-                if bytes.HasPrefix(line, []byte("data: ")) {
-                        lastEvent = string(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data: "))))
-                        
-                        // Check if this is the end of a sequence
-                        if lastEvent == "[DONE]" {
-                                // Write the [DONE] marker
-                                if _, err := w.Write(line); err != nil {
-                                        log.Printf("Error writing final line: %v", err)
+        // Start a goroutine to send heartbeats
+        go func() {
+                ticker := time.NewTicker(15 * time.Second)
+                defer ticker.Stop()
+                for {
+                        select {
+                        case <-ticker.C:
+                                // Send a heartbeat comment
+                                if _, err := w.Write([]byte(": heartbeat\n\n")); err != nil {
+                                        log.Printf("Error sending heartbeat: %v", err)
+                                        cancel()
+                                        return
                                 }
                                 if f, ok := w.(http.Flusher); ok {
                                         f.Flush()
                                 }
-                                
-                                if !hasMoreContent {
-                                        log.Printf("No more content expected, ending stream")
-                                        return
+                        case <-ctx.Done():
+                                return
+                        }
+                }
+        }()
+
+        for {
+                select {
+                case <-ctx.Done():
+                        log.Printf("Context cancelled, ending stream")
+                        return
+                case <-clientClosed:
+                        log.Printf("Client closed connection")
+                        cancel()
+                        return
+                default:
+                        line, err := reader.ReadBytes('\n')
+                        if err != nil {
+                                if err == io.EOF {
+                                        continue
                                 }
-                                
-                                // Reset content flag but continue the stream
-                                hasMoreContent = false
-                                log.Printf("End marker received, waiting for more content")
+                                log.Printf("Error reading stream: %v", err)
+                                cancel()
+                                return
+                        }
+
+                        // Skip empty lines
+                        if len(bytes.TrimSpace(line)) == 0 {
                                 continue
                         }
 
-                        // Try to parse the event as JSON
-                        var event struct {
-                                Choices []struct {
-                                        FinishReason string `json:"finish_reason"`
-                                        Message      struct {
-                                                Content    string     `json:"content"`
-                                                ToolCalls  []ToolCall `json:"tool_calls"`
-                                                Role       string     `json:"role"`
-                                        } `json:"message"`
-                                } `json:"choices"`
+                        // Write the line to the response
+                        if _, err := w.Write(line); err != nil {
+                                log.Printf("Error writing to response: %v", err)
+                                cancel()
+                                return
                         }
-                        
-                        if err := json.Unmarshal([]byte(lastEvent), &event); err == nil {
-                                if len(event.Choices) > 0 {
-                                        choice := event.Choices[0]
-                                        
-                                        // Check for any content that indicates more is coming
-                                        if choice.Message.Content != "" {
-                                                hasMoreContent = true
-                                                log.Printf("Content detected in message")
-                                        }
-                                        
-                                        // Check for tool calls
-                                        if len(choice.Message.ToolCalls) > 0 {
-                                                hasMoreContent = true
-                                                log.Printf("Tool calls detected in message")
-                                        }
-                                        
-                                        // Check finish reason
-                                        switch choice.FinishReason {
-                                        case "tool_calls":
-                                                hasMoreContent = true
-                                                log.Printf("Tool call finish reason detected")
-                                        case "":
-                                                // Empty finish reason means more content is coming
-                                                hasMoreContent = true
-                                                log.Printf("Empty finish reason, expecting more content")
-                                        case "stop":
-                                                if len(choice.Message.ToolCalls) > 0 {
-                                                        hasMoreContent = true
-                                                        log.Printf("Stop with tool calls, expecting more content")
-                                                } else {
-                                                        hasMoreContent = false
-                                                        log.Printf("Final stop received")
-                                                }
-                                        }
-                                }
+
+                        // Flush the response writer
+                        if f, ok := w.(http.Flusher); ok {
+                                f.Flush()
+                        } else {
+                                log.Printf("Warning: ResponseWriter does not support Flush")
                         }
-                }
-
-                // Write the line to the response
-                if _, err := w.Write(line); err != nil {
-                        log.Printf("Error writing to response: %v", err)
-                        return
-                }
-
-                // Flush the response writer
-                if f, ok := w.(http.Flusher); ok {
-                        f.Flush()
-                } else {
-                        log.Printf("Warning: ResponseWriter does not support Flush")
                 }
         }
 }
