@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	deepseekEndpoint  = "https://api.deepseek.com"
-	deepseekChatModel = "deepseek-chat"
+	openRouterEndpoint = "https://openrouter.ai/api/v1"
+	deepseekChatModel = "deepseek/deepseek-chat"
 	gpt4oModel        = "gpt-4o"
 )
 
-var deepseekAPIKey string
+var openRouterAPIKey string
 
 func init() {
 	// Load .env file
@@ -34,10 +34,10 @@ func init() {
 		log.Printf("Warning: .env file not found or error loading it: %v", err)
 	}
 
-	// Get DeepSeek API key
-	deepseekAPIKey = os.Getenv("DEEPSEEK_API_KEY")
-	if deepseekAPIKey == "" {
-		log.Fatal("DEEPSEEK_API_KEY environment variable is required")
+	// Get OpenRouter API key
+	openRouterAPIKey = os.Getenv("OPENROUTER_API_KEY")
+	if openRouterAPIKey == "" {
+		log.Fatal("OPENROUTER_API_KEY environment variable is required")
 	}
 }
 
@@ -220,7 +220,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userAPIKey := strings.TrimPrefix(authHeader, "Bearer ")
-	if userAPIKey != deepseekAPIKey {
+	if userAPIKey != openRouterAPIKey {
 		log.Printf("Invalid API key provided")
 		http.Error(w, "Invalid API key", http.StatusUnauthorized)
 		return
@@ -235,6 +235,13 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Log headers for debugging
 	log.Printf("Request headers: %+v", r.Header)
+
+	// Only handle chat completions API requests
+	if r.URL.Path != "/v1/chat/completions" {
+		log.Printf("Invalid path: %s", r.URL.Path)
+		http.Error(w, "Only /v1/chat/completions endpoint is supported", http.StatusNotFound)
+		return
+	}
 
 	// Read and log request body for debugging
 	var chatReq ChatRequest
@@ -292,46 +299,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to DeepSeek request format
-	deepseekReq := DeepSeekRequest{
-		Model:    deepseekChatModel,
-		Messages: convertMessages(chatReq.Messages),
-		Stream:   chatReq.Stream,
-	}
-
-	// Copy optional parameters if present
-	if chatReq.Temperature != nil {
-		deepseekReq.Temperature = *chatReq.Temperature
-	}
-	if chatReq.MaxTokens != nil {
-		deepseekReq.MaxTokens = *chatReq.MaxTokens
-	}
-
-	// Handle tools/functions
-	if len(chatReq.Tools) > 0 {
-		deepseekReq.Tools = chatReq.Tools
-		if tc := convertToolChoice(chatReq.ToolChoice); tc != "" {
-			deepseekReq.ToolChoice = tc
-		}
-	} else if len(chatReq.Functions) > 0 {
-		// Convert functions to tools format
-		tools := make([]Tool, len(chatReq.Functions))
-		for i, fn := range chatReq.Functions {
-			tools[i] = Tool{
-				Type:     "function",
-				Function: fn,
-			}
-		}
-		deepseekReq.Tools = tools
-
-		// Convert tool_choice if present
-		if tc := convertToolChoice(chatReq.ToolChoice); tc != "" {
-			deepseekReq.ToolChoice = tc
-		}
-	}
-
 	// Create new request body
-	modifiedBody, err := json.Marshal(deepseekReq)
+	modifiedBody, err := json.Marshal(chatReq)
 	if err != nil {
 		log.Printf("Error creating modified request body: %v", err)
 		http.Error(w, "Error creating modified request", http.StatusInternalServerError)
@@ -340,8 +309,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Modified request body: %s", string(modifiedBody))
 
-	// Create the proxy request to DeepSeek
-	targetURL := deepseekEndpoint + r.URL.Path
+	// Create the proxy request to OpenRouter
+	targetURL := openRouterEndpoint + "/chat/completions"
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
@@ -357,9 +326,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Copy headers
 	copyHeaders(proxyReq.Header, r.Header)
 
-	// Set DeepSeek API key and content type
-	proxyReq.Header.Set("Authorization", "Bearer "+deepseekAPIKey)
+	// Set OpenRouter API key and required headers
+	proxyReq.Header.Set("Authorization", "Bearer "+openRouterAPIKey)
 	proxyReq.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set("HTTP-Referer", "https://github.com/danilofalcao/cursor-deepseek") // Optional, for OpenRouter rankings
+	proxyReq.Header.Set("X-Title", "Cursor DeepSeek") // Optional, for OpenRouter rankings
 	if chatReq.Stream {
 		proxyReq.Header.Set("Accept", "text/event-stream")
 	}
@@ -389,8 +360,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	log.Printf("DeepSeek response status: %d", resp.StatusCode)
-	log.Printf("DeepSeek response headers: %v", resp.Header)
+	log.Printf("OpenRouter response status: %d", resp.StatusCode)
+	log.Printf("OpenRouter response headers: %v", resp.Header)
 
 	// Handle error responses
 	if resp.StatusCode >= 400 {
@@ -400,7 +371,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Error reading response", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("DeepSeek error response: %s", string(respBody))
+		log.Printf("OpenRouter error response: %s", string(respBody))
 
 		// Forward the error response
 		for k, v := range resp.Header {
@@ -651,10 +622,10 @@ func handleModelsRequest(w http.ResponseWriter) {
 				OwnedBy: "openai",
 			},
 			{
-				ID:      "deepseek-chat",
+				ID:      deepseekChatModel,
 				Object:  "model",
 				Created: time.Now().Unix(),
-				OwnedBy: "deepseek",
+				OwnedBy: strings.Split(deepseekChatModel, "/")[0], // Extract provider from model ID
 			},
 		},
 	}
