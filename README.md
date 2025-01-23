@@ -18,6 +18,7 @@ This proxy was created to enable Cursor IDE users to leverage DeepSeek's powerfu
 
 ## Prerequisites
 
+- Cursor Pro Subscription
 - Go 1.19 or higher
 - DeepSeek API key
 - Public Endpoint
