@@ -22,7 +22,8 @@ import (
 
 const (
 	openRouterEndpoint = "https://openrouter.ai/api/v1"
-	deepseekChatModel = "deepseek/deepseek-chat"
+	// deepseekChatModel = "deepseek/deepseek-chat"
+	deepseekChatModel = "deepseek/deepseek-r1-distill-llama-70b"
 	gpt4oModel        = "gpt-4o"
 )
 
@@ -299,8 +300,23 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create new request body
-	modifiedBody, err := json.Marshal(chatReq)
+	// Create a modified request without tool-related fields
+	openRouterReq := struct {
+		Model       string    `json:"model"`
+		Messages    []Message `json:"messages"`
+		Stream      bool      `json:"stream"`
+		Temperature *float64  `json:"temperature,omitempty"`
+		MaxTokens   *int      `json:"max_tokens,omitempty"`
+	}{
+		Model:       chatReq.Model,
+		Messages:    chatReq.Messages,
+		Stream:      chatReq.Stream,
+		Temperature: chatReq.Temperature,
+		MaxTokens:   chatReq.MaxTokens,
+	}
+
+	// Create modified request body
+	modifiedBody, err := json.Marshal(openRouterReq)
 	if err != nil {
 		log.Printf("Error creating modified request body: %v", err)
 		http.Error(w, "Error creating modified request", http.StatusInternalServerError)
@@ -323,19 +339,16 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Copy headers
-	copyHeaders(proxyReq.Header, r.Header)
-
-	// Set OpenRouter API key and required headers
+	// Set only the essential headers that work with curl
+	proxyReq.Header = make(http.Header) // Clear all headers
 	proxyReq.Header.Set("Authorization", "Bearer "+openRouterAPIKey)
 	proxyReq.Header.Set("Content-Type", "application/json")
-	proxyReq.Header.Set("HTTP-Referer", "https://github.com/danilofalcao/cursor-deepseek") // Optional, for OpenRouter rankings
-	proxyReq.Header.Set("X-Title", "Cursor DeepSeek") // Optional, for OpenRouter rankings
+
 	if chatReq.Stream {
 		proxyReq.Header.Set("Accept", "text/event-stream")
 	}
 
-	// Add Accept-Language header from request
+	// Add Accept-Language header from request if present
 	if acceptLanguage := r.Header.Get("Accept-Language"); acceptLanguage != "" {
 		proxyReq.Header.Set("Accept-Language", acceptLanguage)
 	}
