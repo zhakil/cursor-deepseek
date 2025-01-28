@@ -21,12 +21,22 @@ import (
 )
 
 const (
-	deepseekEndpoint  = "https://api.deepseek.com"
-	deepseekChatModel = "deepseek-chat"
-	gpt4oModel        = "gpt-4o"
+	deepseekEndpoint     = "https://api.deepseek.com"
+	deepseekBetaEndpoint = "https://api.deepseek.com/beta"
+	deepseekChatModel    = "deepseek-chat"
+	deepseekCoderModel   = "deepseek-coder"
+	gpt4oModel           = "gpt-4o"
 )
 
 var deepseekAPIKey string
+
+// Configuration structure
+type Config struct {
+	endpoint string
+	model    string
+}
+
+var activeConfig Config
 
 func init() {
 	// Load .env file
@@ -39,6 +49,36 @@ func init() {
 	if deepseekAPIKey == "" {
 		log.Fatal("DEEPSEEK_API_KEY environment variable is required")
 	}
+
+	// Parse command line arguments
+	modelFlag := "chat" // default value
+	for i, arg := range os.Args {
+		if arg == "-model" && i+1 < len(os.Args) {
+			modelFlag = os.Args[i+1]
+		}
+	}
+
+	// Configure the active endpoint and model based on the flag
+	switch modelFlag {
+	case "coder":
+		activeConfig = Config{
+			endpoint: deepseekBetaEndpoint,
+			model:    deepseekCoderModel,
+		}
+	case "chat":
+		activeConfig = Config{
+			endpoint: deepseekEndpoint,
+			model:    deepseekChatModel,
+		}
+	default:
+		log.Printf("Invalid model specified: %s. Using default chat model.", modelFlag)
+		activeConfig = Config{
+			endpoint: deepseekEndpoint,
+			model:    deepseekChatModel,
+		}
+	}
+
+	log.Printf("Initialized with model: %s using endpoint: %s", activeConfig.model, activeConfig.endpoint)
 }
 
 // Models response structure
@@ -193,7 +233,7 @@ func main() {
 	}
 }
 
-func enableCors(w http.ResponseWriter, r *http.Request) {
+func enableCors(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
@@ -205,11 +245,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received request: %s %s", r.Method, r.URL.Path)
 
 	if r.Method == "OPTIONS" {
-		enableCors(w, r)
+		enableCors(w)
 		return
 	}
 
-	enableCors(w, r)
+	enableCors(w)
 
 	// Validate API key
 	authHeader := r.Header.Get("Authorization")
@@ -341,7 +381,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Modified request body: %s", string(modifiedBody))
 
 	// Create the proxy request to DeepSeek
-	targetURL := deepseekEndpoint + r.URL.Path
+	targetURL := activeConfig.endpoint + r.URL.Path
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
@@ -414,7 +454,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Handle streaming response
 	if chatReq.Stream {
-		handleStreamingResponse(w, resp)
+		handleStreamingResponse(w, r, resp)
 		return
 	}
 
@@ -422,7 +462,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	handleRegularResponse(w, resp)
 }
 
-func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
+func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response) {
 	log.Printf("Starting streaming response handling")
 	log.Printf("Response status: %d", resp.StatusCode)
 	log.Printf("Response headers: %+v", resp.Header)
@@ -436,12 +476,9 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 	// Create a buffered reader for the response body
 	reader := bufio.NewReader(resp.Body)
 
-	// Create a context to track the client connection
-	ctx, cancel := context.WithCancel(context.Background())
+	// Create a context with cancel for cleanup
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-
-	// Create a channel to detect client disconnection
-	clientClosed := w.(http.CloseNotifier).CloseNotify()
 
 	// Start a goroutine to send heartbeats
 	go func() {
@@ -469,10 +506,6 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 		select {
 		case <-ctx.Done():
 			log.Printf("Context cancelled, ending stream")
-			return
-		case <-clientClosed:
-			log.Printf("Client closed connection")
-			cancel()
 			return
 		default:
 			line, err := reader.ReadBytes('\n')
@@ -566,7 +599,7 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response) {
 		ID:      deepseekResp.ID,
 		Object:  "chat.completion",
 		Created: deepseekResp.Created,
-		Model:   gpt4oModel, // Use the original model name
+		Model:   activeConfig.model,
 		Usage:   deepseekResp.Usage,
 	}
 

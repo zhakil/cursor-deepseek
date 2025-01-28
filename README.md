@@ -86,6 +86,10 @@ Note: Only configure ONE of the API keys based on which variant you're using.
 1. Start the proxy server:
 ```bash
 go run proxy.go
+# OR you can specify a model:
+go run proxy.go -model coder
+# OR
+go run proxy.go -model chat
 # OR for OpenRouter
 go run proxy-openrouter.go
 ```
@@ -122,4 +126,4 @@ The server will start on port 9000 by default.
 
 ## License
 
-This project is licensed under the GNU General Public License v2.0 (GPLv2). See the [LICENSE.md](LICENSE.md) file for details. 
+This project is licensed under the GNU General Public License v2.0 (GPLv2). See the [LICENSE.md](LICENSE.md) file for details.
