@@ -16,7 +16,7 @@ This proxy was created to enable Cursor IDE users to leverage DeepSeek's and Ope
 - Compression support (Brotli, Gzip, Deflate)
 - Compatible with OpenAI API client libraries
 - API key validation for secure access
-- Docker container support
+- Docker container support with multi-variant builds
 
 ## Prerequisites
 
@@ -35,23 +35,51 @@ go mod download
 
 ### Docker Installation
 
+The proxy supports both DeepSeek and OpenRouter variants. Choose the appropriate build command for your needs:
+
 1. Build the Docker image:
-```bash
-docker build -t cursor-deepseek .
-```
-2. Run the container:
+   - For DeepSeek (default):
+   ```bash
+   docker build -t cursor-deepseek .
+   ```
+   - For OpenRouter:
+   ```bash
+   docker build -t cursor-openrouter --build-arg PROXY_VARIANT=openrouter .
+   ```
+
+2. Configure environment variables:
+   - Copy the example configuration:
+   ```bash
+   cp .env.example .env
+   ```
+   - Edit `.env` and add your API key (either DeepSeek or OpenRouter)
+
+3. Run the container:
 ```bash
 docker run -p 9000:9000 --env-file .env cursor-deepseek
+# OR for OpenRouter
+docker run -p 9000:9000 --env-file .env cursor-openrouter
 ```
 
 ## Configuration
 
-1. Create a `.env` file in the project root:
+The repository includes an `.env.example` file showing the required environment variables. To configure:
+
+1. Copy the example configuration:
 ```bash
+cp .env.example .env
+```
+
+2. Edit `.env` and add your API key:
+```bash
+# For DeepSeek
 DEEPSEEK_API_KEY=your_deepseek_api_key_here
-# OR
+
+# OR for OpenRouter
 OPENROUTER_API_KEY=your_openrouter_api_key_here
 ```
+
+Note: Only configure ONE of the API keys based on which variant you're using.
 
 ## Usage
 
@@ -90,6 +118,7 @@ The server will start on port 9000 by default.
 - Secure handling of request/response data
 - Strict API key validation for all requests
 - HTTPS support through HTTP/2
+- Environment variables are never committed to the repository
 
 ## License
 
