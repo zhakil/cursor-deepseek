@@ -1,10 +1,10 @@
 # DeepSeek API Proxy
 
-A high-performance HTTP/2-enabled proxy server designed specifically to enable Cursor IDE's Composer to use DeepSeek's and OpenRouter's language models. This proxy translates OpenAI-compatible API requests to DeepSeek/OpenRouter API format, allowing Cursor's Composer and other OpenAI API-compatible tools to seamlessly work with these models.
+A high-performance HTTP/2-enabled proxy server designed specifically to enable Cursor IDE's Composer to use DeepSeek's, OpenRouter's and Ollama's language models. This proxy translates OpenAI-compatible API requests to DeepSeek/OpenRouter/Ollama API format, allowing Cursor's Composer and other OpenAI API-compatible tools to seamlessly work with these models.
 
 ## Primary Use Case
 
-This proxy was created to enable Cursor IDE users to leverage DeepSeek's and OpenRouter's powerful language models through Cursor's Composer interface as an alternative to OpenAI's models. By running this proxy locally, you can configure Cursor's Composer to use these models for AI assistance, code generation, and other AI features. It handles all the necessary request/response translations and format conversions to make the integration seamless.
+This proxy was created to enable Cursor IDE users to leverage DeepSeek's, OpenRouter's and Ollama's powerful language models through Cursor's Composer interface as an alternative to OpenAI's models. By running this proxy locally, you can configure Cursor's Composer to use these models for AI assistance, code generation, and other AI features. It handles all the necessary request/response translations and format conversions to make the integration seamless.
 
 ## Features
 
@@ -23,6 +23,7 @@ This proxy was created to enable Cursor IDE users to leverage DeepSeek's and Ope
 - Cursor Pro Subscription
 - Go 1.19 or higher
 - DeepSeek or OpenRouter API key
+- Ollama server running locally (optional, for Ollama support)
 - Public Endpoint
 
 ## Installation
@@ -46,6 +47,10 @@ The proxy supports both DeepSeek and OpenRouter variants. Choose the appropriate
    ```bash
    docker build -t cursor-openrouter --build-arg PROXY_VARIANT=openrouter .
    ```
+   - For Ollama:
+   ```bash
+   docker build -t cursor-ollama --build-arg PROXY_VARIANT=ollama .
+   ```
 
 2. Configure environment variables:
    - Copy the example configuration:
@@ -59,6 +64,8 @@ The proxy supports both DeepSeek and OpenRouter variants. Choose the appropriate
 docker run -p 9000:9000 --env-file .env cursor-deepseek
 # OR for OpenRouter
 docker run -p 9000:9000 --env-file .env cursor-openrouter
+# OR for Ollama
+docker run -p 9000:9000 --env-file .env cursor-ollama
 ```
 
 ## Configuration
@@ -77,6 +84,9 @@ DEEPSEEK_API_KEY=your_deepseek_api_key_here
 
 # OR for OpenRouter
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+
+# OR for Ollama
+OLLAMA_API_KEY=your_ollama_api_key_here
 ```
 
 Note: Only configure ONE of the API keys based on which variant you're using.
@@ -92,11 +102,51 @@ go run proxy.go -model coder
 go run proxy.go -model chat
 # OR for OpenRouter
 go run proxy-openrouter.go
+# OR for Ollama
+go run proxy-ollama.go
 ```
 
 The server will start on port 9000 by default.
 
 2. Use the proxy with your OpenAI API clients by setting the base URL to `http://your-public-endpoint:9000/v1`
+
+
+## Exposing the Endpoint Publicly
+
+You can expose your local proxy server to the internet using ngrok or similar services. This is useful when you need to access the proxy from external applications or different networks.
+
+### Using ngrok
+
+1. Install ngrok from https://ngrok.com/download
+
+2. Start your proxy server locally (it will run on port 9000)
+
+3. In a new terminal, run ngrok:
+```bash
+ngrok http 9000
+```
+
+4. ngrok will provide you with a public URL (e.g., https://your-unique-id.ngrok.io)
+
+5. Use this URL as your OpenAI API base URL in Cursor's settings:
+```
+https://your-unique-id.ngrok.io/v1
+```
+
+### Alternative Methods
+
+You can also use other services to expose your endpoint:
+
+1. **Cloudflare Tunnel**: 
+   - Install cloudflared
+   - Run: `cloudflared tunnel --url http://localhost:9000`
+
+2. **LocalTunnel**:
+   - Install: `npm install -g localtunnel`
+   - Run: `lt --port 9000`
+
+Remember to always secure your endpoint appropriately when exposing it to the internet.
+
 
 ### Supported Endpoints
 
