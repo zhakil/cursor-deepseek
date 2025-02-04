@@ -61,17 +61,6 @@ func init() {
 		activeConfig.model = modelFlag
 	}
 
-	log.Printf("Info: Active endpoint is %s", activeConfig.endpoint)
-	log.Printf("Info: Active model is %s", activeConfig.model)
-	// // Parse command line arguments for model
-	// modelFlag := defaultModel // default value
-	// for i, arg := range os.Args {
-	// 	if arg == "-model" && i+1 < len(os.Args) {
-	// 		modelFlag = os.Args[i+1]
-	// 	}
-	// }
-	// activeConfig.model = modelFlag
-
 	log.Printf("Initialized with model: %s using endpoint: %s", activeConfig.model, activeConfig.endpoint)
 }
 
