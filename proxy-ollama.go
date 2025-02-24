@@ -175,13 +175,19 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If the model is not specified, use the default model
-	if chatReq.Model == "" {
-		chatReq.Model = activeConfig.model
+	// Store original model name for response
+	originalModel := chatReq.Model
+	if originalModel == "" {
+		originalModel = activeConfig.model
 	}
+
+	// Always use the configured model internally
+	chatReq.Model = activeConfig.model
+	log.Printf("Model converted to: %s (original: %s)", activeConfig.model, originalModel)
+
 	// Convert to Ollama request format
 	ollamaReq := OllamaRequest{
-		Model:    chatReq.Model,
+		Model:    activeConfig.model,
 		Messages: chatReq.Messages,
 		Stream:   chatReq.Stream,
 	}
@@ -197,7 +203,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	ollamaReqBody, err := json.Marshal(ollamaReq)
 	if err != nil {
 		log.Printf("ERROR: failed to marshal ollama request: %s", err.Error())
-
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -216,13 +221,13 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer ollamaResp.Body.Close()
 
 	if chatReq.Stream {
-		handleStreamingResponse(w, r, ollamaResp)
+		handleStreamingResponse(w, r, ollamaResp, originalModel)
 	} else {
-		handleRegularResponse(w, ollamaResp)
+		handleRegularResponse(w, ollamaResp, originalModel)
 	}
 }
 
-func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response) {
+func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, originalModel string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -254,7 +259,7 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 			"id":      "chatcmpl-" + time.Now().Format("20060102150405"),
 			"object":  "chat.completion.chunk",
 			"created": time.Now().Unix(),
-			"model":   activeConfig.model,
+			"model":   originalModel,
 			"choices": []map[string]interface{}{
 				{
 					"index": 0,
@@ -282,7 +287,7 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 	}
 }
 
-func handleRegularResponse(w http.ResponseWriter, resp *http.Response) {
+func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalModel string) {
 	var ollamaResp OllamaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -294,7 +299,7 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response) {
 		"id":      "chatcmpl-" + time.Now().Format("20060102150405"),
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
-		"model":   activeConfig.model,
+		"model":   originalModel,
 		"choices": []map[string]interface{}{
 			{
 				"index": 0,
@@ -312,8 +317,9 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response) {
 }
 
 func handleModelsRequest(w http.ResponseWriter) {
-	// For simplicity, we return a static list of models
-	models := ModelsResponse{
+	log.Printf("Handling models request")
+	
+	response := ModelsResponse{
 		Object: "list",
 		Data: []Model{
 			{
@@ -326,7 +332,8 @@ func handleModelsRequest(w http.ResponseWriter) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models)
+	json.NewEncoder(w).Encode(response)
+	log.Printf("Models response sent successfully")
 }
 
 type ModelsResponse struct {

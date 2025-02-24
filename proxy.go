@@ -322,15 +322,12 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Requested model: %s", chatReq.Model)
 
-	// Replace gpt-4o model with deepseek-chat
-	if chatReq.Model == gpt4oModel {
-		chatReq.Model = deepseekChatModel
-		log.Printf("Model converted to: %s", deepseekChatModel)
-	} else {
-		log.Printf("Unsupported model requested: %s", chatReq.Model)
-		http.Error(w, fmt.Sprintf("Model %s not supported. Use %s instead.", chatReq.Model, gpt4oModel), http.StatusBadRequest)
-		return
-	}
+	// Store original model name for response
+	originalModel := chatReq.Model
+	
+	// Convert to deepseek-chat internally
+	chatReq.Model = deepseekChatModel
+	log.Printf("Model converted to: %s (original: %s)", deepseekChatModel, originalModel)
 
 	// Convert to DeepSeek request format
 	deepseekReq := DeepSeekRequest{
@@ -454,16 +451,16 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Handle streaming response
 	if chatReq.Stream {
-		handleStreamingResponse(w, r, resp)
+		handleStreamingResponse(w, r, resp, originalModel)
 		return
 	}
 
 	// Handle regular response
-	handleRegularResponse(w, resp)
+	handleRegularResponse(w, resp, originalModel)
 }
 
-func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response) {
-	log.Printf("Starting streaming response handling")
+func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, originalModel string) {
+	log.Printf("Starting streaming response handling with model: %s", originalModel)
 	log.Printf("Response status: %d", resp.StatusCode)
 	log.Printf("Response headers: %+v", resp.Header)
 
@@ -540,7 +537,7 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 	}
 }
 
-func handleRegularResponse(w http.ResponseWriter, resp *http.Response) {
+func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalModel string) {
 	log.Printf("Handling regular (non-streaming) response")
 	log.Printf("Response status: %d", resp.StatusCode)
 	log.Printf("Response headers: %+v", resp.Header)
@@ -599,7 +596,7 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response) {
 		ID:      deepseekResp.ID,
 		Object:  "chat.completion",
 		Created: deepseekResp.Created,
-		Model:   activeConfig.model,
+		Model:   originalModel,
 		Usage:   deepseekResp.Usage,
 	}
 
@@ -674,17 +671,13 @@ func copyHeaders(dst, src http.Header) {
 
 func handleModelsRequest(w http.ResponseWriter) {
 	log.Printf("Handling models request")
+	
+	// Get the requested model from the query parameters
 	response := ModelsResponse{
 		Object: "list",
 		Data: []Model{
 			{
-				ID:      "gpt-4o",
-				Object:  "model",
-				Created: time.Now().Unix(),
-				OwnedBy: "openai",
-			},
-			{
-				ID:      "deepseek-chat",
+				ID:      deepseekChatModel,
 				Object:  "model",
 				Created: time.Now().Unix(),
 				OwnedBy: "deepseek",

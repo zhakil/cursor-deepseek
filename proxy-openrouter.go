@@ -289,18 +289,22 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Requested model: %s", chatReq.Model)
 
-	// Replace gpt-4o model with deepseek-chat
-	if chatReq.Model == gpt4oModel {
-		chatReq.Model = deepseekChatModel
-		log.Printf("Model converted to: %s", deepseekChatModel)
-	} else {
-		log.Printf("Unsupported model requested: %s", chatReq.Model)
-		http.Error(w, fmt.Sprintf("Model %s not supported. Use %s instead.", chatReq.Model, gpt4oModel), http.StatusBadRequest)
-		return
+	// Store original model name for response
+	originalModel := chatReq.Model
+	
+	// Convert to deepseek-chat internally
+	chatReq.Model = deepseekChatModel
+	log.Printf("Model converted to: %s (original: %s)", deepseekChatModel, originalModel)
+
+	// Convert to DeepSeek request format
+	deepseekReq := DeepSeekRequest{
+		Model:    deepseekChatModel,
+		Messages: convertMessages(chatReq.Messages),
+		Stream:   chatReq.Stream,
 	}
 
 	// Create new request body
-	modifiedBody, err := json.Marshal(chatReq)
+	modifiedBody, err := json.Marshal(deepseekReq)
 	if err != nil {
 		log.Printf("Error creating modified request body: %v", err)
 		http.Error(w, "Error creating modified request", http.StatusInternalServerError)
@@ -612,20 +616,15 @@ func copyHeaders(dst, src http.Header) {
 
 func handleModelsRequest(w http.ResponseWriter) {
 	log.Printf("Handling models request")
+	
 	response := ModelsResponse{
 		Object: "list",
 		Data: []Model{
 			{
-				ID:      "gpt-4o",
-				Object:  "model",
-				Created: time.Now().Unix(),
-				OwnedBy: "openai",
-			},
-			{
 				ID:      deepseekChatModel,
 				Object:  "model",
 				Created: time.Now().Unix(),
-				OwnedBy: strings.Split(deepseekChatModel, "/")[0], // Extract provider from model ID
+				OwnedBy: "deepseek",
 			},
 		},
 	}
